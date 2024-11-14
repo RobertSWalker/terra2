@@ -154,7 +154,7 @@ d3$pred <- fitted(m, type = "response")
 min(d3$pred)
 plot(d3$pred, d3$pt_count)
 hist(d3$pred/d3$Total)
-ggplot(data = d3) + geom_sf(aes(fill = pred/Total))
+#ggplot(data = d3) + geom_sf(aes(fill = pred/Total))
 
 #plot map1
 d3$deaths_ind <- d3c$deaths_ind
@@ -165,7 +165,7 @@ world <- ne_countries(scale = "medium", returnclass = "sf")
 ggplot(data = world) +
   geom_sf() +
   geom_sf(data = d, color='gray') +
-  geom_sf(data = d3[d3$deaths_ind > 0,], aes(fill = deaths_ind/Total*100000/27)) + #estimated indig homicide rate per 100,000 per year (data includes 27 years)
+  geom_sf(data = d3, aes(fill = deaths_ind/Total*100000/27)) + #estimated indig homicide rate per 100,000 per year (data includes 27 years)
   scale_fill_viridis(name = "Indigenous\nhomicides\nper 100k", trans = "log", breaks = c(10,100,1000), labels = c(10,100,1000)) +
   coord_sf(xlim = c(-82, -33), ylim = c(-36, 13), expand = FALSE) +
   annotation_scale(location = "bl", width_hint = 0.4) +
@@ -183,7 +183,8 @@ ggplot(data = world) +
 #ggsave("map.pdf", height =7, width =8)
 
 #overall indigenous homicide rate
-sum(d3$deaths_ind)/sum(d3$Total) *100000 /27 #18.14
+sum(d3$deaths_ind)/sum(d3$Total) *100000 /27 #18.1
+sum(d3$homs)/sum(d3$nonindpop2010) *100000 /33 #40.8
 
 #zinb
 library(pscl)
@@ -233,12 +234,41 @@ d4$loghoms_c <- d4$loghoms - mean(d4$loghoms, na.rm=T)
 d4$lognonindpop2010_c <- d4$lognonindpop2010 - mean(d4$lognonindpop2010, na.rm=T)
 d4$logtotal_c <- d4$logtotal - mean(d4$logtotal, na.rm=T)
 
-summary(m.gam1 <- mgcv::gam(homs ~ 0 + log(deaths_ind + 1) + Tipologia + lognonindpop2010_c + logtotal_c + # SIGLA_UF
+#nonindigenous homicides are superlinear
+summary(m.gam1 <- mgcv::gam(homs ~ 0 + Tipologia + lognonindpop2010_c + # SIGLA_UF
                       s(lat, long, k = 200), #play with k
                       data = d4, method = 'REML', family = nb() )) #?family.mgcv poisson or nb or tw ziP cnorm scat
+library(tidybayes);library(modelr);library(RColorBrewer)
+sp <- d4 %>%
+  data_grid(lognonindpop2010_c = seq_range(lognonindpop2010_c, n = 100), 
+            Tipologia = "rural",
+            lat =  -14.2350,
+            long = -51.9253) #%>% add_epred_draws(fit_b, ndraws = 10) %>%
+sp$preds <- predict(m.gam1, newdata=sp, type="response")
+sp$nonindpop2010 = exp(sp$lognonindpop2010_c + mean(d4$lognonindpop2010, na.rm=T))
+ggplot(sp, aes(x=nonindpop2010, y=preds/nonindpop2010*100000/33)) + geom_line() + scale_x_log10()
+
+vis.gam(m.gam1, view = c("long", "lat"), plot.type = "contour", too.far = .1) #persp or contour #plot(m.gam, scheme = 2)
+simulationOutput <- simulateResiduals(fittedModel = m.gam1)
+plot(simulationOutput)
+testSpatialAutocorrelation(simulationOutput, x =  d4$long, y = d4$lat) 
+
+
 summary(m.gam2 <- mgcv::gam(deaths_ind ~ 0 + loghoms_c + Tipologia + lognonindpop2010_c + logtotal_c + # SIGLA_UF
-                              s(lat, long, k = 200), #play with k
+                              s(lat,long,bs="sos",m=2,k=100),
+                              # s(lat, long, k = 200), #play with k
                             data = d4, method = 'REML', family = nb() )) #?family.mgcv poisson or nb or tw ziP cnorm scat
+sp <- d4 %>%
+  data_grid(lognonindpop2010_c = 0,
+            loghoms_c = 0,
+            logtotal_c = seq_range(logtotal_c, n = 100), 
+            Tipologia = "Urbano",
+            lat =  -14.2350,
+            long = -51.9253) #%>% add_epred_draws(fit_b, ndraws = 10) %>%
+sp$preds <- predict(m.gam2, newdata=sp, type="response")
+sp$total = exp(sp$logtotal_c + mean(d4$logtotal, na.rm=T))
+ggplot(sp, aes(x=total, y=preds/total*100000/27)) + geom_line() + scale_x_log10()
+
 gam.check(m.gam2)
 #plot(m.gam1,pages=1,residuals=TRUE)
 vis.gam(m.gam2, view = c("long", "lat"), plot.type = "contour", too.far = .1) #persp or contour #plot(m.gam, scheme = 2)
@@ -259,13 +289,13 @@ testSpatialAutocorrelation(simulationOutput, x =  d4$long, y = d4$lat)
 library(brms)
 get_prior(deaths_ind ~ 0 + Tipologia + loghoms_c + lognonindpop2010_c + logtotal_c + 
             (0 + Tipologia + loghoms_c + lognonindpop2010_c + logtotal_c | SIGLA_UF) +
-             s(lat, long, k=200),  #gp(lat,long),
+            s(lat, long, k=200), #s(lat, long, k=200),  #gp(lat,long),
           data = d4, family = negbinomial())
 
-#fit_a is s(), fit_a2 is gp
 fit_a <- brm(deaths_ind ~ 0 + Tipologia + loghoms_c + lognonindpop2010_c + logtotal_c +
                (0 + Tipologia + loghoms_c + lognonindpop2010_c + logtotal_c | SIGLA_UF) +
-               s(long, lat, k=200), #gp(long,lat),  
+             #  s(lat, long, k=200), #gp(long,lat), \ 
+             s(lat,long,bs="sos",m=2,k=100), 
              data = d4, family = negbinomial(),
              prior = c(prior(normal(1, 1), class = b, coef=loghoms_c),
                        prior(normal(-1, 1), class = b, coef=lognonindpop2010_c),
@@ -318,7 +348,7 @@ sp <- d4 %>%
             SIGLA_UF = NA,
             re_formula = NA) #%>% add_epred_draws(fit_b, ndraws = 10) %>%
 
-ft <- fitted(fit_a, re_formula =NA, probs = c(0.025, 0.975),
+ft <- fitted(fit_a, re_formula =NA, probs = c(0.025, 0.975), type="response",
                newdata = sp) %>% 
   data.frame() %>% 
   bind_cols(sp) %>% 
